@@ -20,6 +20,24 @@ for i in range(len(sys.argv)):
         
 ADDR = (SERVER, PORT)
 
+def parse_http_request(data):
+    
+    lines = data.decode(FORMAT).split("\r\n")
+    
+    req = lines[0]
+    
+    header = {}
+    
+    for i in lines:
+        if not i:
+            continue
+        if ':' in i:
+            key, value = i.split(":", 1)
+            header[key.strip().lower()] = value.strip()
+    
+    return req, header
+            
+
 def handle_Client():
     
     while True:
@@ -27,7 +45,14 @@ def handle_Client():
     
         print(f"[NEW CONNECTION] {clientAddr} connected")
         
-        msg = clientSocket.recv(1024)
+        response_data = clientSocket.recv(1024)
+        
+        req, header = parse_http_request(response_data)
+        
+        print(response_data, '\r\n')
+        
+        print(f'This is request {req}')
+        print(f'This is header {header}')
         
         with open('index.html', 'r') as file:
             http_content = file.read()
