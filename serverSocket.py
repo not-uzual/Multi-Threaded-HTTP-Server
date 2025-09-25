@@ -1,10 +1,14 @@
 import sys
 import socket
+import queue
+import concurrent.futures
 
 SERVER = '127.0.0.1'
 PORT = 8080
 THREADPOOL = 10
 FORMAT = 'utf-8'
+
+connection_que = queue.Queue()
 
 for i in range(len(sys.argv)):
     if(i == 1):
@@ -16,34 +20,45 @@ for i in range(len(sys.argv)):
         
 ADDR = (SERVER, PORT)
 
-serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-serverSocket.bind(ADDR)
+def handle_Client():
+    
+    while True:
+        clientSocket, clientAddr = connection_que.get(block=True)
+    
+        print(f"[NEW CONNECTION] {clientAddr} connected")
+        
+        msg = clientSocket.recv(1024)
+        
+        with open('index.html', 'r') as file:
+            http_content = file.read()
+        
+        http_header = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/html\r\n"
+            f"Content-Length: {len(http_content)}\r\n"
+            "\r\n"
+        )
+        
+        http_response = http_header + http_content
+        
+        clientSocket.send(http_response.encode(FORMAT))
+        clientSocket.close()
+    
 
-serverSocket.listen(50)
-print(f'Server is listening on {ADDR}')
+def start_Server():
+    serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    serverSocket.bind(ADDR)
+    
+    serverSocket.listen(50)
+    print(f'[SERVER LISTENING] on {ADDR}')
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers = THREADPOOL) as executor:
+        for _ in range(THREADPOOL):
+            executor.submit(handle_Client)
 
-while True:
-    clientSocket, addr = serverSocket.accept()
-    print(f'Client accepted on {addr}')
-    
-    msg = clientSocket.recv(1024)
-    
-    with open('index.html', 'r') as file:
-        http_content = file.read()
-    
-    http_header = (
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html\r\n"
-        f"Content-Length: {len(http_content)}\r\n"
-        "\r\n"
-    )
-    
-    http_response = http_header + http_content
-    
-    clientSocket.send(http_response.encode(FORMAT))
-    clientSocket.close()
-    
-    print("Client socket closed")
-    
-    
-    
+        while True:
+            clientSocket, clientAddr = serverSocket.accept()
+            
+            connection_que.put((clientSocket, clientAddr))
+            
+start_Server()
