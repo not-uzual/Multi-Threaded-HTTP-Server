@@ -4,7 +4,10 @@ import queue
 import threading
 import concurrent.futures
 import os
+import json
 from datetime import datetime, timezone
+import random
+import time
 
 class server:
     _SERVER = '127.0.0.1'
@@ -36,59 +39,12 @@ class server:
             print()
             
             
-    def create_Response(self, req_method, resource_path):
+    def create_Response(self, req_method, headers, resource_path, res_Data):
         if req_method == 'GET':
-            if resource_path == '/' or resource_path.split('.')[1] == 'html':
-                resource_path = 'index.html'
-                
-                path = os.path.join('.', 'resources' ,resource_path)
-                self.log_message(f'path i got::: {path}')
-                
-                try:
-                    with open(path, 'r') as file:
-                        http_content = file.read()
-                except FileNotFoundError:
-                    http_content = "<html><body><p>File not found</p></body></html>"
-                    self.log_message("[ERROR] file not found!")
-                    
-                http_header = (
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/html\r\n"
-                    f"Content-Length: {len(http_content)}\r\n"
-                    "charset=utf-8\r\n"
-                    "\r\n"
-                )
-                
-                http_response = http_header + http_content
-                return http_response.encode(self._FORMAT)
-            
-            elif resource_path.split('.')[1] in ['png', 'jpg', 'txt']:
-                path = os.path.join('.', 'resources', resource_path)
-                try:
-                    if resource_path.split('.')[1] == 'txt':
-                        with open(path, 'r') as file:
-                            http_content = file.read()
-                            http_content = http_content.encode(self._FORMAT) 
-                    else:
-                        with open(path, 'rb') as file:
-                            http_content = file.read()
-                except FileNotFoundError:
-                    http_content = "<html><body><p>File not found</p></body></html>"
-                    self.log_message("[ERROR] file not found!")
-                
-                http_header = (
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: application/octet-stream\r\n"
-                    f"Content-Length: {len(http_content)}\r\n"
-                    f"Content-Disposition: attachment; filename={resource_path}\r\n"
-                    f"Date: {datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')}\r\n"
-                    "Server: Multi-threaded HTTP Server\r\n"
-                    "Connection: keep-alive\r\n"
-                    "\r\n"
-                )
-                
-                http_response = http_header.encode(self._FORMAT) + http_content
-                return http_response    
+            return self.serveGETRequest(resource_path)
+        elif req_method == 'POST':
+            return self.servePOSTRequest(headers, res_Data)
+        
                 
                 
             
@@ -107,20 +63,26 @@ class server:
         
         for line in lines:
             if not line:
-                continue #to get params
+                break
             if ':' in line:
                 key, value = line.split(":", 1)
                 headers[key.strip().lower()] = value.strip()
         
-        return req_line, headers
+        res_Data = req_data.decode(self._FORMAT).split("\r\n\r\n")[1]
+        
+        return req_line, headers, res_Data
+    
     
     def handle_Request(self, clientSocket, clientAddr):
                             
         self.log_message(f"[Thread-{self._THREADPOOL - self._thread_semaphore._value}] Connection from {clientAddr[0]}:{clientAddr[1]}")
         try:
+            
+            clientSocket.settimeout(30)
+            
             request_data = clientSocket.recv(1024)
         
-            req_line, headers = self.parse_http_request(request_data)
+            req_line, headers, res_Data = self.parse_http_request(request_data)
             
             connection_type = headers.get('connection', '').lower()
             persistent = 'keep-alive' in connection_type
@@ -137,10 +99,49 @@ class server:
             if req_file != '/':
                 req_file = req_line[1].split('/')[1]
             
-            http_response = self.create_Response(method, req_file)
+            http_response = self.create_Response(method, headers, req_file, res_Data)
+            
+            # if persistent:
+            # connection_header = "Connection: keep-alive\r\n"
+            # else:
+            #     connection_header = "Connection: close\r\n"
+            
+            # http_header = (
+            #     "HTTP/1.1 200 OK\r\n"  # Status line
+            #     "Content-Type: text/html\r\n"  # Type of content
+            #     f"Content-Length: {len(http_content)}\r\n"  # Length in bytes
+            #     f"{connection_header}"  # Whether to keep connection open
+            #     "\r\n"  # Empty line separates headers from body
+            # )
             
             clientSocket.send(http_response)
             
+            # if persistent:
+            # # Use a shorter timeout for follow-up requests
+            # conn.settimeout(5)
+            
+            # # Keep connection open for more requests
+            # while True:
+            #     try:
+            #         # Try to get another request
+            #         request_data = conn.recv(1024)
+            #         if not request_data:  # Client closed connection
+            #             safe_print(f"[INFO] Client {addr} closed connection")
+            #             break
+                    
+            #         # For simplicity, just send the same response
+            #         # In a real server, we'd parse the new request properly
+            #         safe_print(f"[REQUEST] Another request from {addr} (persistent connection)")
+            #         conn.send(http_response.encode(FORMAT))
+                    
+            #     except socket.timeout:
+            #         # No more requests within timeout period
+            #         safe_print(f"[TIMEOUT] No more requests from {addr}, closing connection")
+            #         break
+            #     except Exception as e:
+            #         safe_print(f"[ERROR] Something went wrong with {addr}: {e}")
+            #         break
+             
         except Exception as e:
             self.log_message(f"[ERROR] Problem with client {clientAddr}: {e}")
         finally:
@@ -171,6 +172,8 @@ class server:
                 finally:
                     self._thread_semaphore.release()
                     self.log_message(f"Thread pool status: [{self._thread_semaphore._value}/{self._THREADPOOL}] available")  
+            except queue.Empty:
+                time.sleep(0.1)
             except Exception as e:                
                 if 'available' in locals() and available:
                     self._thread_semaphore.release()
@@ -179,6 +182,8 @@ class server:
         try:
             serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             serverSocket.bind(self._ADDR)
+            
+            serverSocket.settimeout(1.0)
             
             serverSocket.listen(50)
             self.log_message(f"HTTP Server started on http://{self._SERVER}:{self._PORT}")
@@ -193,10 +198,12 @@ class server:
 
                 try:
                     while True:
-                        clientSocket, clientAddr = serverSocket.accept()
+                        try:
+                            clientSocket, clientAddr = serverSocket.accept()
                         
-                        self._connection_que.put((clientSocket, clientAddr))
-                                                
+                            self._connection_que.put((clientSocket, clientAddr))
+                        except socket.timeout:
+                            continue                           
                 except KeyboardInterrupt:
                     self.log_message("Received shutdown signal")
                 finally:
@@ -210,6 +217,93 @@ class server:
             if 'serverSocket' in locals():
                 serverSocket.close()
                 
+                
+    def serveGETRequest(self, resource_path):
+        if resource_path == '/' or resource_path.split('.')[1] == 'html':
+            resource_path = 'index.html'
+            
+            path = os.path.join('.', 'resources' ,resource_path)
+            
+            try:
+                with open(path, 'r') as file:
+                    http_content = file.read()
+            except FileNotFoundError:
+                http_content = "<html><body><p>File not found</p></body></html>"
+                self.log_message("[ERROR] file not found!")
+                
+            http_header = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/html; charset=utf-8\r\n"
+                f"Content-Length: {len(http_content)}\r\n"
+                "\r\n"
+            )
+            
+            http_response = http_header + http_content
+            return http_response.encode(self._FORMAT)
+        
+        elif resource_path.split('.')[1] in ['png', 'jpg', 'txt']:
+            path = os.path.join('.', 'resources', resource_path)
+            try:
+                if resource_path.split('.')[1] == 'txt':
+                    with open(path, 'r') as file:
+                        http_content = file.read()
+                        http_content = http_content.encode(self._FORMAT) 
+                else:
+                    with open(path, 'rb') as file:
+                        http_content = file.read()
+            except FileNotFoundError:
+                http_content = "<html><body><p>File not found</p></body></html>"
+                self.log_message("[ERROR] file not found!")
+            
+            http_header = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: application/octet-stream\r\n"
+                f"Content-Length: {len(http_content)}\r\n"
+                f"Content-Disposition: attachment; filename={resource_path}\r\n"
+                f"Date: {datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')}\r\n"
+                "Server: Multi-threaded HTTP Server\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n"
+            )
+            
+            http_response = http_header.encode(self._FORMAT) + http_content
+            return http_response
+        
+    def servePOSTRequest(self, headers, res_Data):
+        contentType = headers.get('content-type', '')
+        
+        if contentType != 'application/json':
+            pass
+        
+        res_Data = json.loads(res_Data)
+        
+        if type(res_Data) != type({}):
+            print(type(res_Data))
+            pass
+        
+        file_path = os.path.join('.','resources', 'uploads', f'upload_{datetime.now().strftime("%Y%m%d")}_{random.randint(100000, 999999)}.json')
+        
+        with open(file_path, "w") as file:
+            json.dump(res_Data, file, indent=4) 
+        
+        http_content = str({
+             "status": "success",
+            "message": "File created successfully",
+            "filepath": file_path
+        })
+        
+        http_header = (
+            "HTTP/1.1 201 Created\r\n"
+                "Content-Type: application/json\r\n"
+                f"Content-Length: {len(http_content)}\r\n"
+                f"Date: {datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')}\r\n"
+                "Server: Multi-threaded HTTP Server\r\n"
+                "Connection: keep-alive\r\n"
+                "\r\n"
+        )
+        
+        http_response = http_header + http_content
+        return http_response.encode(self._FORMAT)
             
 server = server()
 server.start_Server()
