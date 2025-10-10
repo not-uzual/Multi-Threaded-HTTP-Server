@@ -38,7 +38,7 @@ class server:
         
     def log_message(self, message):
         with self._print_lock:
-            print(f"[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] {message}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
             print()
                 
     def parse_http_request(self, req_data):
@@ -64,9 +64,9 @@ class server:
         return req_line, headers, payload
     
     
-    def create_Response(self, clientSocket, req_method, headers, persistent, file_path, res_Data):
+    def create_Response(self, clientSocket, req_method, headers, persistent, file_path, res_Data, download_param=False):
         if req_method == 'GET':
-            return self.serveGETRequest(clientSocket, persistent, file_path)
+            return self.serveGETRequest(clientSocket, persistent, file_path, download_param)
         elif req_method == 'POST':
             return self.servePOSTRequest(headers, res_Data)
     
@@ -84,7 +84,7 @@ class server:
                 request_data = clientSocket.recv(1024)
                 if not request_data:
                     break
-        
+    
                 req_line, headers, payload = self.parse_http_request(request_data)
                 if not req_line:
                     self.send_error_response(clientSocket, 400, "Bad Request")
@@ -113,7 +113,7 @@ class server:
 
                 self.log_message(f"Connection: {connection_header}")
                 
-                file_path, status_code, status_message = self.get_safe_file_path(path)
+                file_path, status_code, status_message, download_param = self.get_safe_file_path(path)
                 
                 if status_code != 200:
                     self.send_error_response(clientSocket, status_code, status_message)
@@ -123,7 +123,7 @@ class server:
                 
                 content_type = self.get_content_type(file_path)
                 
-                http_response = self.create_Response(clientSocket, method, headers, persistent, file_path, payload)
+                http_response = self.create_Response(clientSocket, method, headers, persistent, file_path, payload, download_param)
                 
                 clientSocket.send(http_response)
                 
@@ -131,7 +131,7 @@ class server:
                     break
                     
                 clientSocket.settimeout(self._KEEP_ALIVE_TIMEOUT)
-            
+        
         except socket.timeout:
             self.log_message(f"[TIMEOUT] Connection with {clientAddr} timed out after {self._KEEP_ALIVE_TIMEOUT}s")
         except ConnectionResetError:
@@ -212,25 +212,35 @@ class server:
                 serverSocket.close()
                 
                 
-    def serveGETRequest(self, clientSocket, persistent, file_path):
+    def serveGETRequest(self, clientSocket, persistent, file_path, download_param=False):
         try:
             with open(file_path, 'rb') as file:
                 http_content = file.read()
         except FileNotFoundError:
             self.send_error_response(clientSocket, 500, "Internal Server Error")
-            
+        
         if persistent:
                 connection_header = f"Connection: keep-alive\r\nKeep-Alive: timeout={self._KEEP_ALIVE_TIMEOUT}, max={self._MAX_REQUESTS_PER_CONNECTION}\r\n"
         else:
             connection_header = "Connection: close\r\n"
-            
+        
         content_type = self.get_content_type(file_path)
+        
+        file_name = os.path.basename(file_path)
+        should_download = download_param or (
+            content_type == 'application/octet-stream' or
+            content_type.startswith('image/') or
+            content_type == 'text/plain' or 
+            content_type == 'application/pdf'
+        )
+        
+        disposition = f"attachment; filename=\"{file_name}\"" if should_download else "inline"
         
         http_header = (
             f"HTTP/1.1 200 OK\r\n"
             f"Content-Type: {content_type}\r\n"
             f"Content-Length: {len(http_content)}\r\n"
-            f"Content-Disposition: {'attachment; filename=' + file_path if content_type == 'application/octet-stream' else 'inline'}\r\n"
+            f"Content-Disposition: {disposition}\r\n"
             f"Date: {datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')}\r\n"
             "Server: Multi-threaded HTTP Server\r\n"
             f"{connection_header}"
@@ -258,8 +268,8 @@ class server:
         with open(file_path, "w") as file:
             json.dump(res_Data, file, indent=4) 
         
-        http_content = str({
-             "status": "success",
+        http_content = json.dumps({
+            "status": "success",
             "message": "File created successfully",
             "filepath": file_path
         })
@@ -343,6 +353,8 @@ class server:
         return True, 200, "OK"
     
     def get_safe_file_path(self, path):
+        download_param = False
+            
         if path == '/' or not path:
             path = '/index.html'
         
@@ -350,17 +362,17 @@ class server:
             path = path[1:]
         
         if self.is_path_traversal_attack(path):
-            return None, 403, "Forbidden"
+            return None, 403, "Forbidden", download_param
         
         file_path = os.path.normpath(os.path.join(self._RESOURCES_DIR, path))
         
         if not file_path.startswith(self._RESOURCES_DIR):
-            return None, 403, "Forbidden"
+            return None, 403, "Forbidden", download_param
         
         if not os.path.isfile(file_path):
-            return None, 404, "Not Found"
+            return None, 404, "Not Found", download_param
         
-        return file_path, 200, "OK"
+        return file_path, 200, "OK", download_param
     
     def is_path_traversal_attack(self, path):
         if '..' in path or '//' in path or '\\' in path:
